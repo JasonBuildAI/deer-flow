@@ -389,6 +389,51 @@ def test_sync_model_call_uses_retry_after_header(monkeypatch: pytest.MonkeyPatch
     assert [event["type"] for event in events] == ["llm_retry"]
 
 
+@pytest.fixture
+def non_utc_timezone(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Pin a non-UTC host timezone where the platform exposes ``time.tzset``.
+
+    ``tzset`` is POSIX-only; hosts without it keep their real timezone, where
+    the assertions below still hold as long as that timezone is not UTC.
+    """
+    if not hasattr(time, "tzset"):
+        yield
+        return
+    try:
+        with monkeypatch.context() as local_timezone:
+            local_timezone.setenv("TZ", "GMT-8")
+            time.tzset()
+            yield
+    finally:
+        time.tzset()
+
+
+@pytest.mark.parametrize("hint", ["Sat Oct 10 12:00:00 2026", "Wed, 10 Oct 2026 12:00:00"])
+def test_zoneless_http_date_retry_after_is_read_as_gmt(monkeypatch: pytest.MonkeyPatch, non_utc_timezone: None, hint: str) -> None:
+    """HTTP-date is always GMT; a zone-less header must not be read as host-local time.
+
+    ``parsedate_to_datetime`` returns a naive datetime for the asctime form and
+    for a date with no zone token, and ``.timestamp()`` reads those as host-local
+    time. On a non-UTC host the honored delay was shifted by the host offset, so
+    the hint was clamped to 0 (retry immediately) or pushed past the 24h bound.
+    """
+    now = datetime(2026, 10, 10, 5, 23, 29, tzinfo=UTC)
+    monkeypatch.setattr("time.time", lambda: now.timestamp())
+    error = FakeError("rate limited", status_code=429, headers={"Retry-After": hint})
+
+    assert _extract_retry_after_ms(error) == 23_791_000
+
+
+@pytest.mark.parametrize(("hint", "expected_ms"), [("60", 60_000), ("Wed, 10 Oct 2026 12:00:00 GMT", 23_791_000)])
+def test_zonal_and_numeric_retry_after_hints_are_unchanged(monkeypatch: pytest.MonkeyPatch, non_utc_timezone: None, hint: str, expected_ms: int) -> None:
+    """Numeric hints and zone-carrying HTTP dates keep their existing arithmetic."""
+    now = datetime(2026, 10, 10, 5, 23, 29, tzinfo=UTC)
+    monkeypatch.setattr("time.time", lambda: now.timestamp())
+    error = FakeError("rate limited", status_code=429, headers={"Retry-After": hint})
+
+    assert _extract_retry_after_ms(error) == expected_ms
+
+
 def test_sync_empty_stop_retries_before_response_is_returned(monkeypatch: pytest.MonkeyPatch) -> None:
     """An empty stop is retried before the failed attempt reaches graph state."""
     middleware = _build_middleware(retry_max_attempts=3, retry_base_delay_ms=1, retry_cap_delay_ms=1)
