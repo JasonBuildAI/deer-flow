@@ -789,6 +789,70 @@ describe("MessageGroup tool links", () => {
     expect(unsafeMarkerCount(fetchHtml + imageHtml)).toBe(0);
   });
 
+  // The bundled DuckDuckGo image provider (the entry enabled in
+  // config.example.yaml) returns title/image_url/thumbnail_url only, and the
+  // Serper and InfoQuest image providers do the same: three of the four bundled
+  // image providers send no source_url at all. An absent source is not a
+  // rejected scheme, so its image must not render as an omitted unsafe link.
+  it("renders image_search thumbnails unlinked when the provider sends no source URL", () => {
+    const html = renderToolCall(
+      "image_search",
+      { query: "DeerFlow" },
+      JSON.stringify({
+        results: [
+          {
+            title: "Reference image",
+            image_url: "https://images.example/full.png",
+            thumbnail_url: "https://images.example/thumb.png",
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain('src="https://images.example/thumb.png"');
+    expect(unsafeMarkerCount(html)).toBe(0);
+    expect(html).not.toContain("Unsafe link");
+    expect(anchorCount(html)).toBe(0);
+  });
+
+  // Provider rows are external input: the tile falls back to the full image
+  // when no thumbnail is sent (InfoQuest sends only image_url, and a provider
+  // can send an empty thumbnail), a row with no image URL at all is dropped,
+  // and a non-string title must never reach an attribute or the tooltip as an
+  // object.
+  it("renders only image_search rows with a usable image URL", () => {
+    const html = renderToolCall(
+      "image_search",
+      { query: "DeerFlow" },
+      JSON.stringify({
+        results: [
+          "not a result",
+          { title: "No image at all" },
+          {
+            title: "Full image only",
+            image_url: "https://images.example/full-1.png",
+          },
+          {
+            title: "Empty thumbnail",
+            thumbnail_url: "",
+            image_url: "https://images.example/full-2.png",
+          },
+          {
+            title: { text: "Invalid title" },
+            thumbnail_url: "https://images.example/thumb-3.png",
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain('src="https://images.example/full-1.png"');
+    expect(html).toContain('src="https://images.example/full-2.png"');
+    expect(html).toContain('src="https://images.example/thumb-3.png"');
+    expect(html.match(/<img /g) ?? []).toHaveLength(3);
+    expect(html).not.toContain("[object Object]");
+    expect(unsafeMarkerCount(html)).toBe(0);
+  });
+
   // Models occasionally emit non-string args, and the step renders mid-stream;
   // an object reaching the JSX would throw and take down the message list.
   it("renders a web_fetch step whose url arg is not a string", () => {

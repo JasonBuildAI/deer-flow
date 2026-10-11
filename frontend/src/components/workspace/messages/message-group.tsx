@@ -706,6 +706,53 @@ function getToolCallKind(name: string) {
   }
 }
 
+type ImageSearchRow = {
+  title: string;
+  source_url?: string;
+  thumbnail_url: string;
+  image_url?: string;
+};
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Normalize one `image_search` step's provider rows for rendering.
+ *
+ * The bundled providers disagree on which fields they send, and only Brave
+ * sends a `source_url` at all, so no field may be assumed to be a string. The
+ * tile renders `thumbnail_url`, falling back to the full `image_url` because
+ * providers omit the thumbnail (InfoQuest sends only `image_url`, and Serper
+ * sends an empty one when the full image is missing); a row with no usable
+ * image URL at all cannot render and is dropped. Decorative fields are coerced
+ * to text so a non-string never reaches an attribute or the tooltip.
+ */
+function normalizeImageSearchRows(results: unknown): ImageSearchRow[] {
+  if (!Array.isArray(results)) {
+    return [];
+  }
+  const rows: ImageSearchRow[] = [];
+  for (const value of results) {
+    if (typeof value !== "object" || value === null) {
+      continue;
+    }
+    const row = value as Record<string, unknown>;
+    const image_url = nonEmptyString(row.image_url);
+    const thumbnail_url = nonEmptyString(row.thumbnail_url) ?? image_url;
+    if (thumbnail_url === undefined) {
+      continue;
+    }
+    rows.push({
+      title: typeof row.title === "string" ? row.title : "",
+      image_url,
+      source_url: nonEmptyString(row.source_url),
+      thumbnail_url,
+    });
+  }
+  return rows;
+}
+
 function ToolCall({
   id,
   messageId,
@@ -885,59 +932,58 @@ function ToolCall({
     if (typeof args.query === "string") {
       label = t.toolCalls.searchForRelatedImagesFor(args.query);
     }
-    const results = (
-      result as {
-        results: {
-          source_url: string;
-          thumbnail_url: string;
-          image_url: string;
-          title: string;
-        }[];
-      }
-    )?.results;
+    const results = (result as { results?: unknown } | undefined)?.results;
+    const images = normalizeImageSearchRows(results);
     return (
       <ChainOfThoughtStep
         key={id}
         label={resolveLabel(label)}
         icon={SearchIcon}
       >
-        {Array.isArray(results) && (
+        {images.length > 0 && (
           <ChainOfThoughtSearchResults>
-            {Array.isArray(results) &&
-              results.map((item) => {
-                const thumbnail = (
-                  <div className="bg-accent size-24">
-                    <img
-                      className="size-full object-cover"
-                      src={item.thumbnail_url}
-                      alt={item.title}
-                      width={100}
-                      height={100}
-                    />
-                  </div>
-                );
-                return (
-                  <Tooltip key={item.image_url} content={item.title}>
-                    {isSafeHref(item.source_url) ? (
-                      <a
-                        className="size-24 overflow-hidden rounded-lg object-cover"
-                        href={item.source_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        {thumbnail}
-                      </a>
-                    ) : (
-                      <UnsafeLink
-                        href={item.source_url}
-                        className="size-24 overflow-hidden rounded-lg"
-                      >
-                        {thumbnail}
-                      </UnsafeLink>
-                    )}
-                  </Tooltip>
-                );
-              })}
+            {images.map((item) => {
+              const thumbnail = (
+                <div className="bg-accent size-24 overflow-hidden rounded-lg">
+                  <img
+                    className="size-full object-cover"
+                    src={item.thumbnail_url}
+                    alt={item.title}
+                    width={100}
+                    height={100}
+                  />
+                </div>
+              );
+              // A source URL that failed the allowlist keeps the omitted-link
+              // marker; a provider that sends no source URL at all gets a
+              // plain thumbnail instead of a claim that it was unsafe.
+              return (
+                <Tooltip
+                  key={item.image_url ?? item.thumbnail_url}
+                  content={item.title}
+                >
+                  {isSafeHref(item.source_url) ? (
+                    <a
+                      className="size-24 overflow-hidden rounded-lg object-cover"
+                      href={item.source_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {thumbnail}
+                    </a>
+                  ) : item.source_url ? (
+                    <UnsafeLink
+                      href={item.source_url}
+                      className="size-24 overflow-hidden rounded-lg"
+                    >
+                      {thumbnail}
+                    </UnsafeLink>
+                  ) : (
+                    thumbnail
+                  )}
+                </Tooltip>
+              );
+            })}
           </ChainOfThoughtSearchResults>
         )}
       </ChainOfThoughtStep>
